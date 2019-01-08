@@ -1,0 +1,159 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta name="generator" content="Hexo 3.8.0"><meta http-equiv="content-type" content="text/html; charset=utf-8"><meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport"><meta content="yes" name="apple-mobile-web-app-capable"><meta content="black-translucent" name="apple-mobile-web-app-status-bar-style"><meta content="telephone=no" name="format-detection"><meta name="description" content="嵌入式开发"><title>arm中断—GIC硬件 | wzhchen's blog</title><link rel="stylesheet" type="text/css" href="//fonts.neworld.org/css?family=Source+Code+Pro"><link rel="stylesheet" type="text/css" href="/css/style.css?v=2.0.1"><link rel="stylesheet" type="text/css" href="/css/highlight.css?v=2.0.1"><link rel="Shortcut Icon" href="/favicon.ico"><link rel="bookmark" href="/favicon.ico"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="apple-touch-icon-precomposed" href="/apple-touch-icon.png"></head><body><div class="body_container"><div id="header"><div class="site-name"><h1 class="hidden">arm中断—GIC硬件</h1><a id="logo" href="/.">wzhchen's blog</a><p class="description">学习、记录、分享</p></div><div id="nav-menu"><a href="/." class="current"><i class="fa fa-home"> 首页</i></a><a href="/archives/"><i class="fa fa-archive"> 归档</i></a><a href="/about/"><i class="fa fa-user"> 关于</i></a><a href="/atom.xml"><i class="fa fa-rss"> 订阅</i></a></div><div id="search-form"><div id="result-mask" class="hide"></div><label><input id="search-key" type="text" autocomplete="off" placeholder="Arama"></label><div id="result-wrap" class="hide"><div id="search-result"></div></div><div class="hide"><template id="search-tpl"><div class="item"><a href="/{path}" title="{title}"><div class="title">{title}</div><div class="time">{date}</div><div class="tags">{tags}</div></a></div></template></div></div></div><div id="layout" class="layout-g"><div class="layout-l"><div class="content_container"><div class="post"><h1 class="post-title">arm中断—GIC硬件</h1><div class="post-meta"><a href="/ARM架构/arm中断控制器/arm中断—GIC硬件/#comments" class="comment-count"></a><p><span class="date">Jan 09, 2018</span><span><a href="/categories/ARM架构/" class="category">ARM架构</a><a href="/categories/ARM架构/ARM中断/" class="category">ARM中断</a></span><span><i id="busuanzi_container_page_pv"><i id="busuanzi_value_page_pv"></i><i>点击</i></i></span></p></div><div class="post-content"><p>本系列将详细描述ARM中断的原理、代码分析和使用实际案例。<br>本文将参考的硬件是GIC-400，Kernel版本 3.10.52<br><a id="more"></a></p>
+<h1 id="ARM核中断架构"><a href="#ARM核中断架构" class="headerlink" title="ARM核中断架构"></a>ARM核中断架构</h1><h2 id="IRQ、FIQ区别"><a href="#IRQ、FIQ区别" class="headerlink" title="IRQ、FIQ区别"></a>IRQ、FIQ区别</h2><p>FIQ和IRQ是两种不同类型的中断，ARM为了支持这两种不同的中断，提供了对应的叫做FIQ和IRQ处理器模式</p>
+<p>两种中断的区别，简单来说就是：FIQ比IRQ快，FIQ会比IRQ快几个指令周期；</p>
+<p>对于实时必要求非常高(估计是ns级)的场合可以使用FIQ，相应的代码复杂度也要比较小，否则会失去FIQ的意义</p>
+<p><em>注：在linux系统中，主要是用IRQ，因此代码中有大量的irq字眼，而很少使用fiq</em></p>
+<h2 id="ARM核心中断开启-amp-关闭"><a href="#ARM核心中断开启-amp-关闭" class="headerlink" title="ARM核心中断开启&amp;关闭"></a>ARM核心中断开启&amp;关闭</h2><p>ARMv7框架中，中断的开启与关闭由CPSR（或CPSR_C）寄存器控制，CPSR（或CPSR_C）寄存器需要使用mrs和msr指令来操作，一般只使用汇编代码来控制</p>
+<img src="/ARM架构/arm中断控制器/arm中断—GIC硬件/CPSR寄存器.png">
+<p>IRQ开启：<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">enable_interrupts</span> <span class="params">(<span class="keyword">void</span>)</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">	<span class="keyword">unsigned</span> <span class="keyword">long</span> temp;</span><br><span class="line">	__asm__ __volatile__(<span class="string">"mrs %0, cpsr\n"</span></span><br><span class="line">			     <span class="string">"bic %0, %0, #0x80\n"</span></span><br><span class="line">			     <span class="string">"msr cpsr_c, %0"</span></span><br><span class="line">			     : <span class="string">"=r"</span> (temp)</span><br><span class="line">			     :</span><br><span class="line">			     : <span class="string">"memory"</span>);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>IRQ/FIQ关闭：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">disable_interrupts</span> <span class="params">(<span class="keyword">void</span>)</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">	<span class="keyword">unsigned</span> <span class="keyword">long</span> old,temp;</span><br><span class="line">	__asm__ __volatile__(<span class="string">"mrs %0, cpsr\n"</span></span><br><span class="line">			     <span class="string">"orr %1, %0, #0xc0\n"</span></span><br><span class="line">			     <span class="string">"msr cpsr_c, %1"</span></span><br><span class="line">			     : <span class="string">"=r"</span> (old), <span class="string">"=r"</span> (temp)</span><br><span class="line">			     :</span><br><span class="line">			     : <span class="string">"memory"</span>);</span><br><span class="line">	<span class="keyword">return</span> (old &amp; <span class="number">0x80</span>) == <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>ARMv8的中断打开方法可以查看下面这篇文章</p>
+<a href="/uboot/uboot下开启ARMv8的定时器中断/" title="uboot下开启ARMv8的定时器中断">uboot下开启ARMv8的定时器中断</a>
+<h1 id="GIC简介"><a href="#GIC简介" class="headerlink" title="GIC简介"></a>GIC简介</h1><p>GIC（Generic Interrupt Controller，<a href="https://developer.arm.com/products/system-ip/system-controllers/interrupt-controllers" target="_blank" rel="noopener">官网介绍</a>）是ARM公司设计的通用中断控制器，集成在CPU芯片内部，目前有V1~V4版本，从官网可知，目前主要的型号有GIC-400(V2),GIC-500(V3/V4),GIC-600(V3/V4)，其中GIC-400<a href="http://infocenter.arm.com/help/topic/com.arm.doc.ddi0471b/DDI0471B_gic400_r0p1_trm.pdf" target="_blank" rel="noopener">手册</a>可以支持最多8个核心、480个共享中断，GIC-500可以支持最多128个核心、960个共享中断，GIC-600可以支持更多的核心。<br>GIC的作用：简单来说包含2方面</p>
+<ul>
+<li>将所有外设的中断统一处理再发送CPU核心，减小CPU核心的复杂度</li>
+<li>实现软中断，用于各CPU核心之间通讯</li>
+<li>虚拟中断，用于虚拟机</li>
+</ul>
+<h2 id="GIC逻辑拆分"><a href="#GIC逻辑拆分" class="headerlink" title="GIC逻辑拆分"></a>GIC逻辑拆分</h2><img src="/ARM架构/arm中断控制器/arm中断—GIC硬件/GICv2-逻辑框图.png">
+<p>上图显示了GIC的内部逻辑框图，大致可以分成4部分：Distributor、CPU interface、GIC virtual interface、virtual CPU interface</p>
+<ol>
+<li><p>Distributor block：收集所有中断源进行处理，将优先级最高的中断送给CPU interface处理，主要功能如下</p>
+<ul>
+<li>中断使能开关，包含2级开关：全局开关、每个中断对就的开关</li>
+<li>设置中断的优先级</li>
+<li>设置中断分发给哪个CPU</li>
+<li>设置中断的触发属性：边沿触发、电平触发</li>
+<li>产生软中断</li>
+</ul>
+</li>
+<li><p>CPU interface block：决定是否将中断发送给CPU，主要功能如下</p>
+<ul>
+<li>控制中断与CPU处理器之间的连线开关，如果关闭了，即使Distributor中使能了中断，中断也不会送达CPU，如果开启，则会将当前优先级最高的中断发送给CPU</li>
+<li>设置priority mask(优先级门限)，低于priority mask的中断不被送给CPU</li>
+<li>设置优先级策略</li>
+<li>中断ACK响应，<em>中断响应后，Distributor会将中断状态设置成Active(或者Active and pending)</em></li>
+<li>中断处理完毕的通知，<em>当中断处理完后，CPU通知CPU interface，表示当前中断处理完成</em></li>
+</ul>
+</li>
+<li><p>GIC virtual interface和Virtual CPU interface：用于虚拟机操作，一般用不上，本文不作详细描述</p>
+</li>
+</ol>
+<p>从图中还可以看出，从处理器输入到GIC的中断可以不经过Distributor和 CPU interface，这种模式称之为bypass中断</p>
+<h2 id="GIC中断编号-amp-分组"><a href="#GIC中断编号-amp-分组" class="headerlink" title="GIC中断编号&amp;分组"></a>GIC中断编号&amp;分组</h2><p>GIC v2支持ID0-ID1019，总共1020个中断，不过实际的硬件（比如GIC-400）不会实现这么多</p>
+<ul>
+<li>ID0-ID31是私在中断，即每个CPU都对应独立的ID0-ID31</li>
+<li>ID32-ID1019 用于SPI（share Peripheral interrupt），这些中断用于CPU的外设，比如GPIO、USB等，共享的意思是各个CPU共享这些中断，即这些中断被所有CPU共享，可以分配给到指定的CPU来处理</li>
+<li>ID0-ID15用于SGI（Software-generated interrupt），可以通过写寄存器产生软件中断</li>
+<li>ID16-ID31用于PPI（Private Peripheral Interrupt），与SPI相对应，私有的意思是指每个CPU都会对应独立ID16-ID31</li>
+</ul>
+<p>GIC设计中，中断分成2个组(group0、group1)，group0里的中断是安全中断，gropu1里的中断是非安全中断，group0的中断可以配置成IRQ或FIQ，goup1的中断是IRQ中断，如果CPU当前处理非安全状态，则读取不到安全中断的状态。</p>
+<p><strong>注：目前linux没有使用分组功能，默认都使用group0中断</strong></p>
+<h2 id="GIC中断处理状态机"><a href="#GIC中断处理状态机" class="headerlink" title="GIC中断处理状态机"></a>GIC中断处理状态机</h2><img src="/ARM架构/arm中断控制器/arm中断—GIC硬件/GIC中断处理状态机.png">
+<ul>
+<li><strong>Inactive</strong>：没有中断</li>
+<li><strong>Pending</strong>： 中断已经产生了，等待CPU处理</li>
+<li><strong>Active</strong>：中断正在被处理，还没结束</li>
+<li><strong>Active and pending</strong>：中断正在处理，又有新的中断产生</li>
+</ul>
+<p><strong>各状态机切换条件：</strong></p>
+<p>A1/A2：添加 Pending状态</p>
+<ol>
+<li>对于SGI，有2种方法：写GICD_SGIR寄存器(产生1个中断)，或者写GICD_SPENDSGIR寄存器(将状态设置成pending)</li>
+<li>对于SPI 和PPI，也是2种方法：硬件产生，或者写GICD_ISPENDR寄存器</li>
+</ol>
+<p>B1/B2：移除Pending状态</p>
+<ol>
+<li>对于SGI，设置GICD_CPENDSGIR寄存器</li>
+<li>对于SPI 和 PPI<ul>
+<li>对于电平触发的中断，电平改变后，Pending状态会移除</li>
+<li>对于边沿触发以及写GICD_ISPENDR产生的中断，需要写GICD_ICPENDR寄存器来移除Pendding状态</li>
+</ul>
+</li>
+</ol>
+<p>C：pending到active</p>
+<ol>
+<li>相应的中断需要使能</li>
+<li>优先级不低于门限值</li>
+<li>读GICC_IAR寄存器里发生状态切换</li>
+</ol>
+<p>D：pending 到active and pending</p>
+<p>​    当读GICC_IAR寄存器时发生pending条件</p>
+<p>E1/E2：移除active</p>
+<p>​    写 GICC_EOIR 或GICC_DIR寄存器</p>
+<h1 id="GIC-400硬件介绍"><a href="#GIC-400硬件介绍" class="headerlink" title="GIC-400硬件介绍"></a>GIC-400硬件介绍</h1><img src="/ARM架构/arm中断控制器/arm中断—GIC硬件/GIC-400框图.png">
+<p>上图显示了GIC-400的框图，从框图可以看出外设与CPU核心不直接相连，外设中断通过GIC通知CPU核心。<br>GIC-400功能：</p>
+<ul>
+<li>有16个SGI（通过写GICD_SGIR寄存器产生中断）</li>
+<li>每个CPU有6个外部PPI和1个内部虚拟PPI</li>
+<li>最多 480个SPI</li>
+<li>中断分组功能（通过写 GICD_IGROUPR寄存器来配置）</li>
+</ul>
+<p>PPI功能分配见下图<br><img src="/ARM架构/arm中断控制器/arm中断—GIC硬件/GIC-400_PPI分类.png"></p>
+<p>​    其中28和31是 bypass中断</p>
+<p>GIC-400中断优先级：</p>
+<ul>
+<li>通过GICD_IPRIORITYR寄存器来配置优先级</li>
+<li>安全模式有32个优先级，非安全模式有16个优先级</li>
+<li>当有2个或更多相同优先级的中断出现时，编号小的中断优先级较高</li>
+</ul>
+<h2 id="寄存器说明"><a href="#寄存器说明" class="headerlink" title="寄存器说明"></a>寄存器说明</h2><p>GIC寄存器地址：GIC在CPU地址空间的其地址是不固定的，GIC内部的寄存器偏移地址是固定的，因为linux代码中GIC的驱动代码可以做到各平台统一，只需要传递几个(Distributor、CPU interface等)基地址即可</p>
+<p>本文主讲<strong>Distributor</strong>和<strong>CPU interfaces</strong>寄存器：</p>
+<ol>
+<li><p>Distributor寄存器，以<strong>GICD_</strong>头，偏移地址：0x1000</p>
+<p><strong>GICD_CTLR</strong>（0x0000）：只有bit[1:0]有用，控制group0、group1的全局开关</p>
+<p><strong>GICD_TYPER</strong>（0x0004）：只读，查看GIC实现了哪些功能及配置，比如CPU数量、中断线数量等</p>
+<p><strong>GICD_IIDR</strong>（0x0008）：ID寄存器，只读，GIC-400是0x0200143B</p>
+<p><strong>GICD_IGROUPRn</strong>（0x0080-0x00BC）：中断分组，linux只使用默认值0</p>
+<p><strong>GICD_ISENABLERn</strong>（0x0100-0x013C）：interrupt Set-Enable，使能中断</p>
+<p><strong>GICD_ICENABLERn</strong>（0x0180-0x01BC）：Interrupt Clear-Enable ，关闭中断</p>
+<p><strong>GICD_ISPENDRn</strong>（0x0200-0x023C）：Interrupt Set-Pending ，将中断设置成Pending状态，不适应SGI中断</p>
+<p><strong>GICD_SPENDSGIRn</strong>（0x0F20-0x0F2C）：SGI Set-Pending，同上，用于SGI中断，每个有8bits，对应8个CPU核心</p>
+<p><strong>GICD_ICPENDRn</strong>（0x0280-0x02BC）：Interrupt Clear-Pending，移除中断的Pending状态，不适应SGI中断</p>
+<p><strong>GICD_CPENDSGIRn</strong>（0x0F10-0x0F1C）：SGI Clear-Pending Registers，同上，用于SGI中断</p>
+<p><strong>GICD_ISACTIVERn</strong>（0x0300-0x033C）：Interrupt Set-Active ，将中断设置成Active状态</p>
+<p><strong>GICD_ICACTIVERn</strong>（0x0380-0x03BC）：Interrupt Clear-Active，移除中断的Active状态</p>
+<p><strong>GICD_IPRIORITYRn</strong>（0x0400-0x05FC）：Interrupt Priority，中断优先级设置</p>
+<p>​    <em>每个中断有8个bits设置，1个寄存器包含4个中断的配置</em></p>
+<p>​    <em>GIC-400的可用优先级个数是32，只有bit[7:3]有效</em></p>
+<p>​    <em>linux中全部使用0xA0</em></p>
+<p><strong>GICD_ITARGETSRn</strong>（0x0800-0x081C）：Interrupt Processor Targets，设置中断分配给哪个CPU</p>
+<p>​    <em>每个中断有8个bits设置，1个寄存器包含4个中断的配置</em></p>
+<p>​    <em>其中前8个寄存器为只读，只会返回当前CPU的值（即每个CPU去读取时返回的值都不一样）</em></p>
+<p>​    <em>对于SPI中断，Linux默认将其分配给CPU0处理</em></p>
+<p><strong>GICD_ICFGRn</strong>（0x0C08-0x0C7C）：Interrupt Configuration，中断配置寄存器，电平触发还是边沿触发</p>
+<p>​    <em>每个中断有2个bits设置，1个寄存器包含16个中断的配置</em></p>
+<p>​    <em>GICD_ICFGR0、GICD_ICFGR1用于SGI和PPI，只读</em></p>
+<p><strong>GICD_PPISR</strong>（0x0D00）：PPI中断状态寄存器，bit[31:25]有效</p>
+<p><strong>GICD_SPISRn</strong>（0x0D04-0x0D3C）：SPI中断状态寄存器</p>
+<p><strong>GICD_SGIR</strong>（0x0F00）：Software Generated Interrupt，写该寄存器产生SGI中断，可以控制往哪个（哪些）CPU发送中断</p>
+</li>
+<li><p>CPU interfaces寄存器，以<strong>GICC_</strong>头，偏移地址：0x2000</p>
+<p><strong>GICC_CTLR</strong>（0x0000）：CPU Interface Control，控制中断是否传给CPU核，控制中断是IRQ还是FIQ</p>
+<p><strong>GICC_PMR</strong>（0x0004）：Priority Mask，控制优先级门限，低于门限的中断不会转发到CPU</p>
+<p>​    <em>设置方法同GICD_IPRIORITYRn</em></p>
+<p>​    <em>linux中使用0xF0</em></p>
+<p><strong>GICC_BPR</strong>（0x0008）：Binary Point Register，命名不好，从名字上看不出意思，实际作用是将优先级分成2部分:Group priority 、Subpriority，只使用优先级的Group priority部分，忽略Subpriority部分</p>
+<p>​    <em>详解：比如GIC-400的默认值是2，则优先级的[7:3]作为Group priority ，[2:0]作为Subpriority，则总共可生成32个优先级，与GICD_IPRIORITYRn保持一致</em></p>
+<p><strong>GICC_IAR</strong>（0x000C）：Interrupt Acknowledge，只读，可以查看当前pending的最高优先级中断</p>
+<p><strong>GICC_EOIR</strong>（0x0010）：End of Interrupt，只写，中断处理完成后需要写该寄存器</p>
+<p><strong>GICC_RPR</strong>（0x0014）：Running Priority，只读，当前处理中断的优先级</p>
+<p><strong>GICC_HPPIR</strong>（0x0018）：Highest Priority Pending ，只读，处于Pending状态的中断里优先级最高的</p>
+<p><strong>GICC_IIDR</strong>（0x00FC）：ID寄存器，GIC-400的值是0x0202143B</p>
+<p><strong>GICC_DIR</strong>（0x1000）：Deactivate Interrupt ，只写，移除中断的Active状态</p>
+</li>
+</ol>
+<h2 id="编程指导"><a href="#编程指导" class="headerlink" title="编程指导"></a>编程指导</h2><p>使用步骤：</p>
+<ol>
+<li>打开ARM核的中断开关，CPSR寄存器</li>
+<li>打开Distributor的局开关：GICD_CTLR[0]</li>
+<li>打开Distributor的中断开关：寄存器GICD_ISENABLER/GICD_ICENABLER</li>
+<li>配置中断触发方式：GICD_ICFGRn</li>
+<li>等待中断</li>
+<li>读取GICC_IAR寄存器，获取中断编号</li>
+<li>执行中断程序</li>
+<li>写GICC_EOIR寄存器</li>
+</ol>
+</div><div class="tags"><a href="/tags/arm/">arm</a><a href="/tags/中断/">中断</a><a href="/tags/芯片资料/">芯片资料</a></div><div class="post-share"><div class="bdsharebuttonbox"><span style="float:left;line-height: 28px;height: 28px;font-size:16px;font-weight:blod">分享到：</span><a href="#" data-cmd="more" class="bds_more"></a><a href="#" data-cmd="mshare" title="分享到一键分享" class="bds_mshare"></a><a href="#" data-cmd="fbook" title="分享到Facebook" class="bds_fbook"></a><a href="#" data-cmd="twi" title="分享到Twitter" class="bds_twi"></a><a href="#" data-cmd="linkedin" title="分享到linkedin" class="bds_linkedin"></a><a href="#" data-cmd="youdao" title="分享到有道云笔记" class="bds_youdao"></a><a href="#" data-cmd="evernotecn" title="分享到印象笔记" class="bds_evernotecn"></a><a href="#" data-cmd="weixin" title="分享到微信" class="bds_weixin"></a><a href="#" data-cmd="qzone" title="分享到QQ空间" class="bds_qzone"></a><a href="#" data-cmd="tsina" title="分享到新浪微博" class="bds_tsina"></a></div></div><div class="post-nav"><a href="/ARM架构/arm体系统结构/armV8架构/" class="pre">ARM v8架构</a><a href="/环境搭建/hexo-github搭建自己的博客/" class="next">hexo+github搭建自己的博客</a></div><div id="comments"></div></div></div></div><div class="layout-r"><div id="sidebar"><div class="search-pla"></div><div id="toc" class="widget"><div class="widget-title"><i class="fa fa-fei">文章目录</i></div><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#ARM核中断架构"><span class="toc-text">ARM核中断架构</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#IRQ、FIQ区别"><span class="toc-text">IRQ、FIQ区别</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#ARM核心中断开启-amp-关闭"><span class="toc-text">ARM核心中断开启&amp;关闭</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#GIC简介"><span class="toc-text">GIC简介</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#GIC逻辑拆分"><span class="toc-text">GIC逻辑拆分</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#GIC中断编号-amp-分组"><span class="toc-text">GIC中断编号&amp;分组</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#GIC中断处理状态机"><span class="toc-text">GIC中断处理状态机</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#GIC-400硬件介绍"><span class="toc-text">GIC-400硬件介绍</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#寄存器说明"><span class="toc-text">寄存器说明</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#编程指导"><span class="toc-text">编程指导</span></a></li></ol></li></ol></div><div class="widget"><div class="widget-title"><i class="fa fa-xie"> 最新文章</i></div><ul class="post-list"><li class="post-list-item"><a class="post-list-link" href="/Linux系统/linux串口驱动/">linux串口驱动</a></li><li class="post-list-item"><a class="post-list-link" href="/芯片方案/imx6/imx6ull方案研究_软件篇/">i.MX 6ULL研究笔记_软件篇</a></li><li class="post-list-item"><a class="post-list-link" href="/芯片方案/imx6/imx6ull方案研究_硬件篇/">i.MX 6ULL研究笔记_硬件篇</a></li><li class="post-list-item"><a class="post-list-link" href="/uboot/uboot下开启ARMv8的定时器中断/">uboot下开启ARMv8的定时器中断</a></li><li class="post-list-item"><a class="post-list-link" href="/ARM架构/arm体系统结构/armV8架构/">ARM v8架构</a></li><li class="post-list-item"><a class="post-list-link" href="/ARM架构/arm中断控制器/arm中断—GIC硬件/">arm中断—GIC硬件</a></li><li class="post-list-item"><a class="post-list-link" href="/环境搭建/hexo-github搭建自己的博客/">hexo+github搭建自己的博客</a></li></ul></div><div class="widget"><div class="widget-title"><i class="fa fa-gui"> 分类</i></div><ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/ARM架构/">ARM架构</a><span class="category-list-count">2</span><ul class="category-list-child"><li class="category-list-item"><a class="category-list-link" href="/categories/ARM架构/ARM中断/">ARM中断</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/ARM架构/arm体系统结构/">arm体系统结构</a><span class="category-list-count">1</span></li></ul></li><li class="category-list-item"><a class="category-list-link" href="/categories/linux/">linux</a><span class="category-list-count">1</span><ul class="category-list-child"><li class="category-list-item"><a class="category-list-link" href="/categories/linux/驱动/">驱动</a><span class="category-list-count">1</span></li></ul></li><li class="category-list-item"><a class="category-list-link" href="/categories/uboot/">uboot</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/环境搭建/">环境搭建</a><span class="category-list-count">1</span><ul class="category-list-child"><li class="category-list-item"><a class="category-list-link" href="/categories/环境搭建/杂项/">杂项</a><span class="category-list-count">1</span></li></ul></li><li class="category-list-item"><a class="category-list-link" href="/categories/芯片方案/">芯片方案</a><span class="category-list-count">2</span><ul class="category-list-child"><li class="category-list-item"><a class="category-list-link" href="/categories/芯片方案/imx6/">imx6</a><span class="category-list-count">2</span></li></ul></li></ul></div><div class="widget"><div class="widget-title"><i class="fa fa-biao"> 标签</i></div><div class="tagcloud"><a href="/tags/hexo/" style="font-size: 15px;">hexo</a> <a href="/tags/arm/" style="font-size: 15px;">arm</a> <a href="/tags/uboot/" style="font-size: 15px;">uboot</a> <a href="/tags/中断/" style="font-size: 15px;">中断</a> <a href="/tags/串口/" style="font-size: 15px;">串口</a> <a href="/tags/tty/" style="font-size: 15px;">tty</a> <a href="/tags/芯片资料/" style="font-size: 15px;">芯片资料</a> <a href="/tags/imx6/" style="font-size: 15px;">imx6</a></div></div><div class="widget"><div class="widget-title"><i class="fa fa-archive"> 归档</i></div><ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">一月 2018</a></li></ul></div><div class="widget"><div class="widget-title"><i class="fa fa-you"> 友情链接</i></div><ul></ul><a href="http://www.example1.com/" title="site-name1" target="_blank">site-name1</a><ul></ul><a href="http://www.example2.com/" title="site-name2" target="_blank">site-name2</a><ul></ul><a href="http://www.example3.com/" title="site-name3" target="_blank">site-name3</a></div></div></div></div><a id="totop" href="#top"></a><div id="footer"><div class="footer-info"><p><a href="/baidusitemap.xml">Baidu Site Haritası</a> |  <a href="/atom.xml">订阅</a> |  <a href="/about/">关于</a></p><p>本站总访问量：<i id="busuanzi_container_site_pv"><i id="busuanzi_value_site_pv"></i></i>次</p><p><span> Copyright &copy;<a href="/." rel="nofollow">wzhchen.</a></span><span> Theme by<a rel="nofollow" target="_blank" href="https://github.com/chaooo/hexo-theme-BlueLake"> BlueLake.</a></span><span> Count by<a href="http://busuanzi.ibruce.info/"> busuanzi.</a></span><span> Powered by<a rel="nofollow" target="_blank" href="https://hexo.io"> Hexo.</a></span></p></div></div></div><script src="https://dn-lbstatics.qbox.me/busuanzi/2.3/busuanzi.pure.mini.js" async></script><script type="text/javascript" src="/js/search.json.js?v=2.0.1"></script><script type="text/javascript" src="/js/toctotop.js?v=2.0.1" async></script><script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":["mshare","weixin","tsina","qzone","linkedin","fbook","twi","print","renren","sqq","evernotecn","bdysc","tqq","tqf","bdxc","kaixin001","tieba","douban","bdhome","thx","ibaidu","meilishuo","mogujie","diandian","huaban","duitang","hx","fx","youdao","sdo","qingbiji","people","xinhua","mail","isohu","yaolan","wealink","ty","iguba","h163","copy"],"bdPic":"","bdStyle":"1","bdSize":"16"},"share":{},"image":{"viewList":["tsina","qzone","weixin","fbook","twi","linkedin","youdao","evernotecn","mshare"],"viewText":"分享到：","viewSize":"16"},"selectShare":{"bdContainerClass":null,"bdSelectMiniList":["tsina","qzone","weixin","fbook","twi","linkedin","youdao","evernotecn","mshare"]}};with(document)0[(getElementsByTagName('head')[0]||head).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];
+</script></body></html>
